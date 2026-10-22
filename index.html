@@ -59,8 +59,8 @@ M delay,speed,depth ビブラート(depth=cent、M0でoff)  H freq,pms,ams OPNA�
 "use strict";
 const $=id=>document.getElementById(id), st=$("status");
 const say=(m,e)=>{st.textContent=m;st.className=e?"error":""};
-let OPNChip;
-try{({OPNChip}=await import("./libfm.js"))}catch(e){say("libfm.js を読み込めません。このファイルと同じ場所に置き、ローカルサーバー経由で開いてください。",1);return}
+let OPNChip,FMChannel;
+try{({OPNChip,FMChannel}=await import("./libfm.js"))}catch(e){say("libfm.js を読み込めません。このファイルと同じ場所に置き、ローカルサーバー経由で開いてください。",1);return}
 
 const TPQ=48,WH=192,NOTE={c:0,d:2,e:4,f:5,g:7,a:9,b:11},FMOFF=[0,8,4,12];
 const CARR=[[3],[3],[3],[3],[1,3],[1,2,3],[1,2,3],[0,1,2,3]];
