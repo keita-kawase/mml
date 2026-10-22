@@ -228,10 +228,8 @@ class Synth{
     // すべてのFMチャンネルにデフォルト音色を設定
     for(let p=0; p<maxFmCh; p++) this.tone(p, S.tones[0] || PRE[0]);
   }
-
-  // ポート・チャンネル計算を3ch周期の制限から解除するカスタム制御
+  w(port,addr,d){this.c.write(port,addr,d)}
   cw(p, base, d) {
-    // 仮想的にチャンネルオブジェクトへ直接書き込み、またはポートを拡張計算
     if (p < this.c.channels.length) {
       const ch = this.c.channels[p];
       if (base === 0xa0) { ch.fnum = (ch.fnum & 0x700) | d; this.c._applyChFreq(p); }
