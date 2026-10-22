@@ -91,11 +91,12 @@ function expand(a,errs){
   return out;
 }
 function compile(src,is8){
-  // A〜Zまでの最大26パート、または必要な分だけ動的に確保
-  const buf=Array.from({length:30},()=>[]);
+  // 最大26パート（A-Z）対応用に配列を確保
+  const buf=Array.from({length:26},()=>[]);
   const S={tones:{},ev:[],end:0,loop:-1,title:"",tempo:120,errs:[]};
   let def=null;
   const fin=()=>{if(def.n.length>=42){S.tones[def.id]=mk(def.n);def=null}};
+  
   src.split(/\r?\n/).forEach((raw,li)=>{
     const ln=li+1,line=raw.replace(/;.*$/,"").trim();if(!line)return;
     if(def){
@@ -105,21 +106,25 @@ function compile(src,is8){
     let m;
     if(m=line.match(/^@(\d+)(.*)$/)){def={id:+m[1],n:(m[2].match(/-?\d+/g)||[]).map(Number)};fin()}
     else if(m=line.match(/^#(\w+)\s*(.*)$/)){const k=m[1].toLowerCase();if(k==="title")S.title=m[2];else if(k==="tempo")S.tempo=+m[2]||120}
-    // パート名の文字（A-Z）に対応
+    // A-Z までの任意のアルファベットパート名を許可
     else if(m=line.match(/^([A-Z]+)\s+(.*)$/)){
-      for(const c of new Set(m[1])) {
-        const pIdx = c.charCodeAt(0) - 65; // A=0, B=1 ...
-        for(const ch of m[2]+" ") buf[pIdx].push({c:ch,ln});
+      for(const c of new Set(m[1])){
+        const pIdx = c.charCodeAt(0) - 65;
+        if(pIdx >= 0 && pIdx < 26) {
+          for(const ch of m[2]+" ") buf[pIdx].push({c:ch,ln});
+        }
       }
     }
     else S.errs.push(`行${ln}: 解釈できません`);
   });
+
   if(def)S.errs.push(`音色@${def.id}の数値が足りません`);
+  
   buf.forEach((b,pi)=>{
     if(!b.length)return;
-    // 実機チェックの制限（!is8 && ...）を撤廃してすべてのパートを許可
     comp(S,pi,expand(b,S.errs));
   });
+
   S.ev.unshift({t:0,p:0,k:6,a:S.tempo});
   S.ev.sort((x,y)=>x.t-y.t);
   return S;
@@ -195,21 +200,19 @@ function comp(S,pi,a){
 
 /* ---------- シンセ + シーケンサ ---------- */
 const so=x=>{const T=.85;return x>T?T+(1-T)*Math.tanh((x-T)/(1-T)):x<-T?-T-(1-T)*Math.tanh((-x-T)/(1-T)):x};
-
-  class Synth{
+class Synth{
   constructor(sr,is8,S,once){
     this.sr=sr;this.is8=is8;this.S=S;this.once=once;
     
-    // 最大32チャンネルなどの拡張FMチャンネル数でOPNChipを生成
+    // 実機制限（3ch/6ch）を跨いで最大26FMチャンネルまで自動生成
     const maxFmCh = 26; 
     this.c = new OPNChip(is8 ? 2608 : 2203, sr);
-    // チップ内部のFMチャンネル配列を動的に必要数まで拡張
     while(this.c.channels.length < maxFmCh) {
       this.c.channels.push(new FMChannel());
     }
 
-    // ボイス情報を最大32ch分用意
-    this.v = Array.from({length: 32}, () => ({
+    // 26FM + SSG3ch + リズム1ch = 30ボイス分確保
+    this.v = Array.from({length: 30}, () => ({
       on:false,n:57,leg:0,det:0,vol:12,pan:0xc0,pms:0,ams:0,
       vib:[0,8,0],vph:0,vibc:0,age:0,lvl:0,ph:3,rm:0,mix:1,
       tone:null,env:{ar:31,dr:0,sr:0,rr:22,sl:15}
@@ -221,13 +224,13 @@ const so=x=>{const T=.85;return x>T?T+(1-T)*Math.tanh((x-T)/(1-T)):x<-T?-T-(1-T)
     
     if(is8){this.w(0,0x11,0x2c);for(let i=0;i<6;i++)this.w(0,0x18+i,0xdf)}
     
-    // すべてのFMチャンネルにデフォルト音色を設定
     for(let p=0; p<maxFmCh; p++) this.tone(p, S.tones[0] || PRE[0]);
   }
 
-  // ポート・チャンネル計算を3ch周期の制限から解除するカスタム制御
+  w(port,addr,d){this.c.write(port,addr,d)}
+
+  // 実機レジスタのポート制限をバイパスして直接チャンネルへ設定を反映
   cw(p, base, d) {
-    // 仮想的にチャンネルオブジェクトへ直接書き込み、またはポートを拡張計算
     if (p < this.c.channels.length) {
       const ch = this.c.channels[p];
       if (base === 0xa0) { ch.fnum = (ch.fnum & 0x700) | d; this.c._applyChFreq(p); }
@@ -257,86 +260,58 @@ const so=x=>{const T=.85;return x>T?T+(1-T)*Math.tanh((x-T)/(1-T)):x<-T?-T-(1-T)
       for (let i = 0; i < 4; i++) ops[i].setKey(on);
     }
   }
+
   mix(){
     let r=0;
-    for(let c=0;c<3;c++){const m=this.v[6+c].mix;if(!(m&1))r|=1<<c;if(!(m&2))r|=8<<c}
+    const ssgStart = this.c.channels.length;
+    for(let c=0;c<3;c++){
+      const m=this.v[ssgStart+c].mix;
+      if(!(m&1))r|=1<<c;
+      if(!(m&2))r|=8<<c;
+    }
     this.w(0,7,r);
   }
-  panReg(p){if(this.is8){const v=this.v[p];this.cw(p,0xb4,v.pan|v.ams<<4|v.pms)}}
-  tl(p){
-    const v=this.v[p],tn=v.tone;if(!tn)return;
-    const att=v.vol<=0?127:(15-v.vol)*6;
-    for(let o=0;o<4;o++){const x=tn.op[o][5];this.fw(p,0x40,o,CARR[tn.alg].includes(o)?Math.min(127,x+att):x)}
-  }
-  tone(p,tn){
-    if(!tn)return;
-    this.v[p].tone=tn;
-    tn.op.forEach((q,o)=>{
-      this.fw(p,0x30,o,(q[8]&7)<<4|(q[7]&15));
-      this.fw(p,0x50,o,(q[6]&3)<<6|(q[0]&31));
-      this.fw(p,0x60,o,(q[9]&1)<<7|(q[1]&31));
-      this.fw(p,0x70,o,q[2]&31);
-      this.fw(p,0x80,o,(q[4]&15)<<4|(q[3]&15));
-    });
-    this.tl(p);this.cw(p,0xb0,tn.fb<<3|tn.alg);this.panReg(p);
-  }
+
   pitch(p){
     const v=this.v[p],f=440*Math.pow(2,(v.n-57)/12+(v.det*100/64+v.vibc)/1200);
-    // p >= 0 のすべてのFMパート（拡張されたチャンネル）に対応
     if(p < this.c.channels.length){
       const K=(this.is8?144:72)/this.c.clock;let b=0,fn=0;
       for(b=0;b<7;b++){fn=f*Math.pow(2,21-b)*K;if(fn<2048)break}
       fn=Math.max(1,Math.min(2047,Math.round(fn)));
       this.cw(p,0xa4,b<<3|fn>>8);this.cw(p,0xa0,fn&255);
-    } else {
-      // SSG等の特殊パート処理
+    }else{
       const ssgIdx = p - this.c.channels.length;
-      const tp=Math.max(1,Math.min(4095,Math.round(this.c.ssgRate/(2*f))));
-      this.w(0,ssgIdx*2,tp&255);this.w(0,ssgIdx*2+1,tp>>8);
+      if(ssgIdx < 3) {
+        const tp=Math.max(1,Math.min(4095,Math.round(this.c.ssgRate/(2*f))));
+        this.w(0,ssgIdx*2,tp&255);this.w(0,ssgIdx*2+1,tp>>8);
+      }
     }
   }
-  fire(e){
-    const p=e.p,v=this.v[p],fm=p<6,ss=p>5&&p<9;
-    switch(e.k){
-      case 1:
-        v.n=e.a;v.leg=e.b;v.age=0;v.vph=0;v.vibc=0;
-        if(fm){this.pitch(p);if(!e.b){this.key(p,0);this.key(p,1)}}
-        else if(ss){this.pitch(p);if(!e.b){v.ph=0;v.lvl=0}}
-        v.on=true;break;
-      case 2:if(fm)this.key(p,0);else if(ss)v.ph=3;v.on=false;break;
-      case 3:if(fm)this.tone(p,this.S.tones[e.a]||PRE[e.a]);break;
-      case 4:v.vol=e.a;if(fm)this.tl(p);else if(p===9&&this.is8)this.w(0,0x11,Math.round(e.a*44/15));break;
-      case 5:v.pan=[0,0x40,0x80,0xc0][e.a&3];if(fm)this.panReg(p);break;
-      case 6:this.bpm=e.a;this.spt=this.sr*60/(this.bpm*TPQ);break;
-      case 7:v.det=e.a;if(v.on)this.pitch(p);break;
-      case 8:v.env={ar:e.a[0],dr:e.a[1],sr:e.a[2],rr:e.a[3],sl:e.a[4]};break;
-      case 9:this.w(0,6,e.a&31);break;
-      case 10:v.mix=e.a&3;this.mix();break;
-      case 11:v.vib=e.a;v.vibc=0;break;
-      case 12:v.rm=e.a;this.w(0,0x10,e.a&63);break;
-      case 13:
-        if(this.is8&&fm){
-          const[f,pm,am]=e.a;
-          this.w(0,0x22,f<0?0:8|(f&7));v.pms=f<0?0:pm&7;v.ams=f<0?0:am&3;this.panReg(p);
-        }break;
+
+  allOff(){
+    for(let p=0;p<this.v.length;p++){
+      const v=this.v[p];
+      if(p<this.c.channels.length) this.key(p,0);
+      else v.ph=3;
+      v.on=false;
     }
   }
-  allOff(){for(let p=0;p<9;p++){const v=this.v[p];if(p<6)this.key(p,0);else v.ph=3;v.on=false}}
+
   tick(){
     const ev=this.S.ev;
     while(this.ei<ev.length&&ev[this.ei].t<=this.tk)this.fire(ev[this.ei++]);
     const r=x=>x?Math.pow(2,(x-31)/3):0;
-    for(let p=0;p<9;p++){
+    for(let p=0;p<this.v.length;p++){
       const v=this.v[p];
       if(v.on&&v.vib[2]&&++v.age>v.vib[0]){v.vph+=v.vib[1];v.vibc=Math.sin(v.vph*Math.PI/32)*v.vib[2];this.pitch(p)}
-      if(p>5){
+      if(p>=this.c.channels.length && p<this.c.channels.length+3){
         const e=v.env;
         if(v.ph===0){v.lvl+=r(e.ar);if(v.lvl>=1){v.lvl=1;v.ph=1}}
         else if(v.ph===1){v.lvl-=r(e.dr);if(v.lvl<=e.sl/15){v.lvl=e.sl/15;v.ph=2}}
         else if(v.ph===2){v.lvl-=r(e.sr)}
         else v.lvl-=r(e.rr);
         if(v.lvl<0)v.lvl=0;
-        this.w(0,8+p-6,Math.round(v.lvl*v.vol));
+        this.w(0,8+(p-this.c.channels.length),Math.round(v.lvl*v.vol));
       }
     }
     this.tk++;
@@ -350,19 +325,7 @@ const so=x=>{const T=.85;return x>T?T+(1-T)*Math.tanh((x-T)/(1-T)):x<-T?-T-(1-T)
       }
     }
   }
-  run(L,R,n){
-    for(let k=0;k<n;k++){
-      if(this.done){L[k]=R[k]=0;continue}
-      if(!this.fin||this.tail>0){
-        this.acc++;
-        while(this.acc>=this.spt){this.acc-=this.spt;this.tick()}
-      }
-      const s=this.c.renderSample();L[k]=so(s[0]);R[k]=so(s[1]);
-      if(this.fin&&--this.tail<=0)this.done=true;
-    }
-  }
 }
-
 /* ---------- UI ---------- */
 const src=$("src"),is8=()=>$("chip").value==="1";
 const SAMPLE=`#Title Sample - Night Browser
