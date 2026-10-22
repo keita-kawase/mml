@@ -1391,6 +1391,7 @@ async function decompressVgz(arrayBuffer) {
 export {
   VGMParser,
   OPNChip,
+  FMChannel,
   YM2203,
   YM2608,
   VGMPlayer,
@@ -1401,6 +1402,7 @@ if (typeof window !== 'undefined') {
   window.OPNSynth = {
     VGMParser,
     OPNChip,
+    FMChannel,
     YM2203,
     YM2608,
     VGMPlayer,
